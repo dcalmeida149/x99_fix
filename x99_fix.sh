@@ -65,8 +65,48 @@ if [ "$EUID" -ne 0 ] && ! sudo -n true 2>/dev/null; then
     exit 1
 fi
 
+# Validar hardware (CPU Intel e idealmente Xeon)
+echo "[0/8] Validando hardware..."
+if [ ! -f /proc/cpuinfo ]; then
+    echo "ERRO: /proc/cpuinfo não encontrado."
+    exit 1
+fi
+
+CPU_VENDOR=$(grep -m1 "vendor_id" /proc/cpuinfo | awk '{print $3}')
+CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo | cut -d':' -f2 | xargs)
+
+if [ "$CPU_VENDOR" != "GenuineIntel" ]; then
+    echo "AVISO: CPU não é Intel (detectado: $CPU_VENDOR)"
+    echo "Este script é otimizado para processadores Intel Xeon em chipset X99."
+    read -r -p "Deseja continuar mesmo assim? (s/n): " CONTINUE
+    if [ "$CONTINUE" != "s" ] && [ "$CONTINUE" != "S" ]; then
+        echo "Operação cancelada pelo usuário."
+        exit 0
+    fi
+else
+    echo "CPU detectada: $CPU_MODEL"
+    if echo "$CPU_MODEL" | grep -qi "xeon"; then
+        echo "✓ Processador Xeon detectado (ideal para X99)"
+    else
+        echo "AVISO: Processador não é Xeon. Este script é otimizado para Xeon E5 v3/v4."
+        read -r -p "Deseja continuar? (s/n): " CONTINUE
+        if [ "$CONTINUE" != "s" ] && [ "$CONTINUE" != "S" ]; then
+            echo "Operação cancelada pelo usuário."
+            exit 0
+        fi
+    fi
+fi
+
+# Tentar detectar chipset (melhor esforço)
+if command -v lspci &> /dev/null; then
+    CHIPSET=$(lspci | grep -i "ISA bridge" | head -n1)
+    if [ -n "$CHIPSET" ]; then
+        echo "Chipset detectado: $CHIPSET"
+    fi
+fi
+
 # Detectar a distribuição
-echo "[0/7] Detectando sistema operacional..."
+echo "[1/8] Detectando sistema operacional..."
 if [ -f /etc/os-release ]; then
     . /etc/os-release
     DISTRO=$ID
@@ -101,24 +141,25 @@ case $DISTRO in
         ;;
 esac
 
-# 1. Criar backup do GRUB
-echo "[1/7] Criando backup do GRUB..."
+# 2. Criar backup do GRUB
+echo "[2/8] Criando backup do GRUB..."
 GRUB_FILE="/etc/default/grub"
 if [ -f "$GRUB_FILE" ]; then
-    sudo cp "$GRUB_FILE" "${GRUB_FILE}.backup.$(date +%Y%m%d_%H%M%S)"
-    echo "Backup criado: ${GRUB_FILE}.backup.$(date +%Y%m%d_%H%M%S)"
+    BACKUP_FILE="${GRUB_FILE}.backup.$(date +%Y%m%d_%H%M%S)"
+    sudo cp "$GRUB_FILE" "$BACKUP_FILE"
+    echo "Backup criado: $BACKUP_FILE"
 else
     echo "ERRO: Arquivo GRUB não encontrado em $GRUB_FILE"
     exit 1
 fi
 
-# 2. Instalar intel-microcode e ferramentas
-echo "[2/7] Instalando pacotes necessários..."
+# 3. Instalar intel-microcode e ferramentas
+echo "[3/8] Instalando pacotes necessários..."
 sudo $PKG_UPDATE
 sudo $PKG_INSTALL $MICROCODE_PKG $CPUFREQ_PKG
 
-# 3. Configurar GRUB com parâmetros completos de estabilidade para X99
-echo "[3/7] Configurando GRUB com parâmetros otimizados para X99..."
+# 4. Configurar GRUB com parâmetros completos de estabilidade para X99
+echo "[4/8] Configurando GRUB com parâmetros otimizados para X99..."
 
 # Parâmetros completos para kits X99
 GRUB_PARAMS="quiet splash intel_idle.max_cstate=0 processor.max_cstate=1 idle=poll intel_iommu=on iommu=pt pcie_aspm=off nmi_watchdog=0 nowatchdog intel_pstate=disable clocksource=tsc tsc=reliable"
@@ -126,10 +167,18 @@ GRUB_PARAMS="quiet splash intel_idle.max_cstate=0 processor.max_cstate=1 idle=po
 sudo sed -i.bak "s/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT=\"$GRUB_PARAMS\"/" "$GRUB_FILE"
 
 echo "Atualizando GRUB..."
-sudo $GRUB_UPDATE
+if sudo $GRUB_UPDATE; then
+    echo "✓ GRUB atualizado com sucesso"
+else
+    echo "ERRO: Falha ao atualizar GRUB"
+    echo "Restaurando backup..."
+    sudo cp "$BACKUP_FILE" "$GRUB_FILE"
+    echo "Backup restaurado. Verifique a configuração manualmente."
+    exit 1
+fi
 
-# 4. Configurar governor=performance permanentemente
-echo "[4/7] Configurando governor para performance..."
+# 5. Configurar governor=performance permanentemente
+echo "[5/8] Configurando governor para performance..."
 
 case $DISTRO in
     ubuntu|debian|zorin)
@@ -145,8 +194,30 @@ case $DISTRO in
         ;;
 esac
 
-# 5. Ajustar governor imediatamente
-echo "[5/7] Aplicando governor performance agora..."
+# 6. Criar serviço systemd para governor permanente
+echo "[6/8] Criando serviço systemd para governor..."
+
+SYSTEMD_SERVICE="/etc/systemd/system/cpufreq-performance.service"
+sudo tee "$SYSTEMD_SERVICE" > /dev/null <<EOF
+[Unit]
+Description=Set CPU Governor to Performance
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do [ -f \$cpu ] && echo performance > \$cpu; done'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable cpufreq-performance.service
+echo "✓ Serviço systemd criado e habilitado"
+
+# 7. Ajustar governor imediatamente
+echo "[7/8] Aplicando governor performance agora..."
 if [ -d /sys/devices/system/cpu/cpu0/cpufreq ]; then
     for CPU in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
         if [ -f "$CPU" ]; then
@@ -158,8 +229,8 @@ else
     echo "AVISO: cpufreq não disponível neste sistema."
 fi
 
-# 6. Desabilitar irqbalance se existir
-echo "[6/7] Verificando e desabilitando irqbalance..."
+# 8. Desabilitar irqbalance se existir
+echo "[8/8] Verificando e desabilitando irqbalance..."
 if systemctl list-unit-files 2>/dev/null | grep -q irqbalance; then
     echo "irqbalance encontrado, desabilitando..."
     sudo systemctl disable irqbalance 2>/dev/null || true
@@ -169,8 +240,8 @@ else
     echo "irqbalance não está instalado (OK)."
 fi
 
-# 7. Mostrar resultado final
-echo "[7/7] Verificando estado atual:"
+# 9. Mostrar resultado final
+echo "[9/9] Verificando estado atual:"
 echo "---------------------------------------------"
 echo "Parâmetros do kernel:"
 cat /proc/cmdline
@@ -185,8 +256,7 @@ echo ""
 echo "✓ Concluído com sucesso!"
 echo ""
 echo "IMPORTANTE: Reinicie o sistema para aplicar todas as mudanças."
-echo "Deseja reiniciar automaticamente agora? (s/n)"
-read -r RES
+read -r -p "Deseja reiniciar automaticamente agora? (s/n): " RES
 
 if [ "$RES" = "s" ] || [ "$RES" = "S" ]; then
     echo "Reiniciando em 3 segundos..."
