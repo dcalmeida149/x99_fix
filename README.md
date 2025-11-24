@@ -859,16 +859,12 @@ Contribuições são bem-vindas! Se você:
 **Daniel Almeida**
 
 - GitHub: [@dcalmeida149](https://github.com/dcalmeida149)
-- Email: [Seu Email]
-- LinkedIn: [Seu LinkedIn]
 
 ---
 
 ## 🙏 Agradecimentos
 
 - Comunidade X99 do Reddit ([r/Xeon](https://reddit.com/r/xeon))
-- Sellers do AliExpress que documentaram problemas
-- Kernel.org pela excelente documentação
 - Todos que testaram e reportaram feedback
 
 ---
