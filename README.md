@@ -843,7 +843,7 @@ Contribuições são bem-vindas! Se você:
 4. Push para o branch (`git push origin feature/minha-feature`)
 5. Abra um Pull Request
 
-### Áreas que Precisam de Ajuda:
+### Áreas que Precisam de Melhoria:
 
 - [ ] Suporte para Arch Linux / Manjaro
 - [ ] Suporte para openSUSE
